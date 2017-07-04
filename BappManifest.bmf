@@ -1,0 +1,12 @@
+Uuid: fe2a5a42985b4ac8b1801a09b670758f
+ExtensionType: 1
+Name: jcryption-handler
+RepoName: jcryption-handler
+ScreenVersion: 1.0
+SerialVersion: 0
+MinPlatformVersion: 0
+ProOnly: False
+Author: Gabriele Gristina
+ShortDescription: Analyze web applications that use JCryption
+EntryPoint: build/libs/Burp-JCryption-Handler.jar
+BuildCommand: gradle jar
