@@ -31,12 +31,12 @@ import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableModel;
 
-public class BurpExtender extends AbstractTableModel implements IBurpExtender, ITab, IMessageEditorController, IMessageEditorTabFactory, IContextMenuFactory, IScannerInsertionPointProvider, IProxyListener {
+public class BurpExtender extends AbstractTableModel implements IBurpExtender, ITab, IMessageEditorController, IMessageEditorTabFactory, IContextMenuFactory, IScannerInsertionPointProvider, IProxyListener, IExtensionStateListener {
 
 	private static final long serialVersionUID = 1L;
 
 	public static String EXTENSION_NAME    = "JCryption Handler";
-	public static String EXTENSION_VERSION = "1.0";
+	public static String EXTENSION_VERSION = "1.1";
 	public static String EXTENSION_AUTHOR  = "Gabriele 'matrix' Gristina";
 	public static String EXTENSION_URL     = "https://www.github.com/matrix/Burp-JCryption-Handler";
 	public static String EXTENSION_IMG     = "/img/matrix_systemFailure.gif";
@@ -56,6 +56,12 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 	private static byte[] mainPassphrase = "".getBytes();
 	private static String mainParameter = "jCryption";
 	private static List<IParameter> currentSession = null;
+
+	public boolean isBase64(String s)
+	{
+		Pattern p = Pattern.compile("^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$");
+		return p.matcher(s).matches();
+	}
 
 	public static String byteArrayToHex(byte[] a)
 	{
@@ -120,6 +126,13 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 		callbacks.registerMessageEditorTabFactory(this);
 		callbacks.registerContextMenuFactory(this);
 		callbacks.registerProxyListener(this);
+		callbacks.registerExtensionStateListener(this);
+
+		// if found, restore extension settings
+		String lastParameter = callbacks.loadExtensionSetting("JCryption_lastParameter");
+		if (lastParameter != null && lastParameter.length() > 0) setParameter(lastParameter);
+		String lastPassphrase = callbacks.loadExtensionSetting("JCryption_lastPassphrase");
+		if (lastPassphrase != null && lastPassphrase.length() > 0) setPassphrase(helpers.stringToBytes(lastPassphrase));
 
 		// UI
 
@@ -141,7 +154,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 				tabs.addTab("Response", responseViewer.getComponent());
 				loggerPane.setRightComponent(tabs);
 
-				preferencesPane = new PreferencesPane();
+				preferencesPane = new PreferencesPane(callbacks);
 				AboutPane aboutPane = new AboutPane();
 
 				mainTab = new JTabbedPane();
@@ -306,16 +319,20 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 			if (content != null)
 			{
 				IParameter parameter = helpers.getRequestParameter(content, mainParameter);
-				byte[] ciphertext = helpers.base64Decode(helpers.urlDecode(parameter.getValue()));
-				currentPassphrase = getCurrentPassphrase(byteArrayToHex(JCryption.getMD5(ciphertext)));
-
-				if (currentPassphrase != null && currentPassphrase.length > 0)
+				String urlDecoded = helpers.urlDecode(parameter.getValue());
+				if (isBase64(urlDecoded))
 				{
-					currentParamType = parameter.getType();
-					byte[] decrypted = JCryption.decrypt(currentPassphrase, helpers.base64Decode(helpers.urlDecode(parameter.getValue())));
+					byte[] ciphertext = helpers.base64Decode(urlDecoded);
+					currentPassphrase = getCurrentPassphrase(byteArrayToHex(JCryption.getMD5(ciphertext)));
 
-					txtInput.setText(decrypted);
-					txtInput.setEditable(editable);
+					if (currentPassphrase != null && currentPassphrase.length > 0)
+					{
+						currentParamType = parameter.getType();
+						byte[] decrypted = JCryption.decrypt(currentPassphrase, ciphertext);
+
+						txtInput.setText(decrypted);
+						txtInput.setEditable(editable);
+					}
 				}
 			}
 
@@ -427,20 +444,24 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 
 					// get 'data' parameter
 					IParameter d = helpers.getRequestParameter(request, mainParameter);
+					String urlDecoded = helpers.urlDecode(d.getValue());
 
-					// decrypt with currentPassphrase
-					byte[] ciphertext = helpers.base64Decode(helpers.urlDecode(d.getValue()));
-					byte[] currentPassphrase = getCurrentPassphrase(byteArrayToHex(JCryption.getMD5(ciphertext)));
-					byte[] decrypted = JCryption.decrypt(currentPassphrase, helpers.base64Decode(helpers.urlDecode(d.getValue())));
+					if (isBase64(urlDecoded))
+					{
+						// decrypt with currentPassphrase
+						byte[] ciphertext = helpers.base64Decode(urlDecoded);
+						byte[] currentPassphrase = getCurrentPassphrase(byteArrayToHex(JCryption.getMD5(ciphertext)));
+						byte[] decrypted = JCryption.decrypt(currentPassphrase, ciphertext);
 
-					// encrypt with mainPassphrase
-					byte[] encrypt = JCryption.encrypt(mainPassphrase, new String(decrypted));
+						// encrypt with mainPassphrase
+						byte[] encrypt = JCryption.encrypt(mainPassphrase, new String(decrypted));
 
-					// updateParameter 'data' value
-					IParameter d2 = helpers.buildParameter(mainParameter, helpers.urlEncode(helpers.base64Encode(encrypt)), d.getType());
-					byte[] request2 = helpers.updateParameter(request, d2);
+						// updateParameter 'data' value
+						IParameter d2 = helpers.buildParameter(mainParameter, helpers.urlEncode(helpers.base64Encode(encrypt)), d.getType());
+						byte[] request2 = helpers.updateParameter(request, d2);
 
-					callbacks.doActiveScan(iReqResp.getHttpService().getHost(), iReqResp.getHttpService().getPort(), iReqResp.getHttpService().getProtocol().equalsIgnoreCase("https"), request2);
+						callbacks.doActiveScan(iReqResp.getHttpService().getHost(), iReqResp.getHttpService().getPort(), iReqResp.getHttpService().getProtocol().equalsIgnoreCase("https"), request2);
+					}
 				}
 			}
 
@@ -532,25 +553,29 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 
 					// get 'data' parameter
 					IParameter d = helpers.getRequestParameter(request, mainParameter);
+					String urlDecoded = helpers.urlDecode(d.getValue());
 
-					// decrypt with currentPassphrase
-					byte[] ciphertext = helpers.base64Decode(helpers.urlDecode(d.getValue()));
-					byte[] currentPassphrase = getCurrentPassphrase(byteArrayToHex(JCryption.getMD5(ciphertext)));
-					byte[] decrypted = JCryption.decrypt(currentPassphrase, helpers.base64Decode(helpers.urlDecode(d.getValue())));
+					if (isBase64(urlDecoded))
+					{
+						// decrypt with currentPassphrase
+						byte[] ciphertext = helpers.base64Decode(urlDecoded);
+						byte[] currentPassphrase = getCurrentPassphrase(byteArrayToHex(JCryption.getMD5(ciphertext)));
+						byte[] decrypted = JCryption.decrypt(currentPassphrase, ciphertext);
 
-					// encrypt with mainPassphrase
-					byte[] encrypt = JCryption.encrypt(mainPassphrase, new String(decrypted));
+						// encrypt with mainPassphrase
+						byte[] encrypt = JCryption.encrypt(mainPassphrase, new String(decrypted));
 
-					// updateParameter 'data' value
-					IParameter d2 = helpers.buildParameter(mainParameter, helpers.urlEncode(helpers.base64Encode(encrypt)), d.getType());
-					byte[] request2 = helpers.updateParameter(request, d2);
+						// updateParameter 'data' value
+						IParameter d2 = helpers.buildParameter(mainParameter, helpers.urlEncode(helpers.base64Encode(encrypt)), d.getType());
+						byte[] request2 = helpers.updateParameter(request, d2);
 
-					callbacks.sendToRepeater(
-							httpService.getHost(),
-							httpService.getPort(),
-							httpService.getProtocol().equalsIgnoreCase("https"),
-							request2,
-							EXTENSION_NAME);
+						callbacks.sendToRepeater(
+								httpService.getHost(),
+								httpService.getPort(),
+								httpService.getProtocol().equalsIgnoreCase("https"),
+								request2,
+								EXTENSION_NAME);
+					}
 				}
 			}
 
@@ -583,28 +608,33 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 				IParameter d = helpers.getRequestParameter(messageInfo.getRequest(), mainParameter);
 				if (d != null)
 				{
-					synchronized(log)
+					String urlDecoded = helpers.urlDecode(d.getValue());
+
+					if (isBase64(urlDecoded))
 					{
-						int row = log.size();
-						IHttpRequestResponsePersisted irequestResponse = callbacks.saveBuffersToTempFiles(messageInfo);
-						IRequestInfo irequestInfo = helpers.analyzeRequest(irequestResponse);
-						int ref = message.getMessageReference();
-
-						log.add(new LogEntry(irequestResponse, irequestInfo, helpers.base64Decode(helpers.urlDecode(d.getValue())), helpers.bytesToString(mainPassphrase)));
-						fireTableRowsInserted(row, row);
-
-						refs.put(ref, row);
-
-						List<IParameter> c = new ArrayList<IParameter>();
-						List<IParameter> requestParams = irequestInfo.getParameters();
-
-						for (IParameter parameter : requestParams)
+						synchronized(log)
 						{
-							if (parameter.getType() != IParameter.PARAM_COOKIE) continue;
-							c.add(parameter);
-						}
+							int row = log.size();
+							IHttpRequestResponsePersisted irequestResponse = callbacks.saveBuffersToTempFiles(messageInfo);
+							IRequestInfo irequestInfo = helpers.analyzeRequest(irequestResponse);
+							int ref = message.getMessageReference();
 
-						if (c.size() > 0) setCurrentSession(c);
+							log.add(new LogEntry(irequestResponse, irequestInfo, helpers.base64Decode(urlDecoded), helpers.bytesToString(mainPassphrase)));
+							fireTableRowsInserted(row, row);
+
+							refs.put(ref, row);
+
+							List<IParameter> c = new ArrayList<IParameter>();
+							List<IParameter> requestParams = irequestInfo.getParameters();
+
+							for (IParameter parameter : requestParams)
+							{
+								if (parameter.getType() != IParameter.PARAM_COOKIE) continue;
+								c.add(parameter);
+							}
+
+							if (c.size() > 0) setCurrentSession(c);
+						}
 					}
 				}
 				else
@@ -617,6 +647,7 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 						URL url = requestInfo.getUrl();
 						String p = url.getFile().substring(4);
 						mainPassphrase = helpers.stringToBytes(p);
+						callbacks.saveExtensionSetting("JCryption_lastPassphrase", p);
 						preferencesPane.setPassphrase(p);
 						message.setInterceptAction(IInterceptedProxyMessage.ACTION_DROP);
 					}
@@ -686,15 +717,19 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 		byte[] req = baseRequestResponse.getRequest();
 
 		IParameter dataParameter = helpers.getRequestParameter(req, mainParameter);
+
 		if (dataParameter == null || mainPassphrase == null)
 		{
 			return null;
 		}
 
+		String urlDecoded = helpers.urlDecode(dataParameter.getValue());
+		if (!isBase64(urlDecoded)) return null;
+
 		// if the parameter is present, add custom insertion points for it
 		List<IScannerInsertionPoint> insertionPoints = new ArrayList<IScannerInsertionPoint>();
 
-		byte[] decrypted = JCryption.decrypt(mainPassphrase, helpers.base64Decode(helpers.urlDecode(dataParameter.getValue())));
+		byte[] decrypted = JCryption.decrypt(mainPassphrase, helpers.base64Decode(urlDecoded));
 
 		// rebuild decrypted request
 		String param = helpers.bytesToString(decrypted);
@@ -787,6 +822,16 @@ public class BurpExtender extends AbstractTableModel implements IBurpExtender, I
 		{
 			return INS_EXTENSION_PROVIDED;
 		}
+	}
+
+	@Override
+	public void extensionUnloaded()
+	{
+		// save current extension settings
+		String tmp1 = getParameter();
+		if (tmp1 != null && tmp1.length() > 0) callbacks.saveExtensionSetting("JCryption_lastParameter", tmp1);
+		String tmp2 = helpers.bytesToString(getPassphrase());
+		if (tmp2 != null && tmp2.length() > 0) callbacks.saveExtensionSetting("JCryption_lastPassphrase", tmp2);
 	}
 
 	private class Table extends JTable
