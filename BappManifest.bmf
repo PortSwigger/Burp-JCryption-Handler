@@ -2,8 +2,8 @@ Uuid: fe2a5a42985b4ac8b1801a09b670758f
 ExtensionType: 1
 Name: JCryption Handler
 RepoName: jcryption-handler
-ScreenVersion: 1.1
-SerialVersion: 2
+ScreenVersion: 1.2
+SerialVersion: 3
 MinPlatformVersion: 0
 ProOnly: False
 Author: Gabriele Gristina
